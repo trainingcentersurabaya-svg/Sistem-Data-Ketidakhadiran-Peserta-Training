@@ -28,11 +28,11 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="id" className={`${montserrat.variable} ${nunito.variable}`}>
+    <html lang="id" className={`${montserrat.variable} ${nunito.variable}`} suppressHydrationWarning>
       <head>
         <link rel="icon" href={LOGO_URL} type="image/svg+xml" />
       </head>
-      <body className="antialiased min-h-screen bg-[#F4F7F6] text-gray-800">
+      <body className="antialiased min-h-screen bg-[#F4F7F6] text-gray-800" suppressHydrationWarning>
         {children}
         <Toaster
           position="top-right"
