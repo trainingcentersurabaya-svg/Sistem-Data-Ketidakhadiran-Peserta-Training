@@ -1,6 +1,10 @@
 // app/api/auth/change-password/route.js
 import { NextResponse } from 'next/server';
-import { getSessionFromRequest } from '@/lib/session';
+import {
+  getSessionFromRequest,
+  createSessionToken,
+  getSessionCookieOptions,
+} from '@/lib/session';
 import { getSupabaseAdmin } from '@/lib/supabase';
 import { comparePassword, hashPassword, validatePasswordStrength } from '@/lib/auth';
 
@@ -8,6 +12,7 @@ export const runtime = 'nodejs';
 
 export async function POST(request) {
   try {
+    // 1. Pastikan pengguna sudah login
     const session = await getSessionFromRequest(request);
     if (!session) {
       return NextResponse.json(
@@ -16,7 +21,17 @@ export async function POST(request) {
       );
     }
 
-    const { currentPassword, newPassword, confirmPassword } = await request.json();
+    // 2. Baca isian dari browser
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { ok: false, error: 'Data yang dikirim tidak valid' },
+        { status: 400 }
+      );
+    }
+    const { currentPassword, newPassword, confirmPassword } = body || {};
 
     if (!currentPassword || !newPassword) {
       return NextResponse.json(
@@ -32,6 +47,13 @@ export async function POST(request) {
       );
     }
 
+    if (newPassword === currentPassword) {
+      return NextResponse.json(
+        { ok: false, error: 'Password baru tidak boleh sama dengan password saat ini' },
+        { status: 400 }
+      );
+    }
+
     const strength = validatePasswordStrength(newPassword);
     if (!strength.valid) {
       return NextResponse.json(
@@ -40,10 +62,11 @@ export async function POST(request) {
       );
     }
 
+    // 3. Ambil data pengguna dari database
     const supabase = getSupabaseAdmin();
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, password_hash')
+      .select('id, username, role, branch_id, password_hash, is_active')
       .eq('id', session.userId)
       .single();
 
@@ -54,6 +77,14 @@ export async function POST(request) {
       );
     }
 
+    if (!user.is_active) {
+      return NextResponse.json(
+        { ok: false, error: 'Akun Anda dinonaktifkan. Hubungi Admin Pusat.' },
+        { status: 403 }
+      );
+    }
+
+    // 4. Cek password lama
     const isMatch = await comparePassword(currentPassword, user.password_hash);
     if (!isMatch) {
       return NextResponse.json(
@@ -62,28 +93,39 @@ export async function POST(request) {
       );
     }
 
+    // 5. Simpan password baru dan matikan tanda "wajib ganti password"
     const newHash = await hashPassword(newPassword);
-
     const { error: updateError } = await supabase
       .from('users')
       .update({
         password_hash: newHash,
         must_change_password: false,
-        updated_at: new Date().toISOString(),
       })
-      .eq('id', session.userId);
+      .eq('id', user.id);
 
     if (updateError) {
+      console.error('[Change Password] Gagal update:', updateError);
       return NextResponse.json(
         { ok: false, error: 'Gagal memperbarui password di database' },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({
+    // 6. Buat token login BARU (tanda mustChangePassword = false) dan pasang di cookie
+    const token = await createSessionToken({
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      branchId: user.branch_id,
+      mustChangePassword: false,
+    });
+
+    const response = NextResponse.json({
       ok: true,
       message: 'Password berhasil diperbarui',
     });
+    response.cookies.set({ ...getSessionCookieOptions(), value: token });
+    return response;
   } catch (err) {
     console.error('[Change Password Error]:', err);
     return NextResponse.json(
