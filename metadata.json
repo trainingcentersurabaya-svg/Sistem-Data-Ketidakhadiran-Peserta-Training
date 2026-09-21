@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Data Ketidakhadiran Peserta Training",
+  "description": "Sistem pencatatan ketidakhadiran peserta training multi-cabang dengan bukti Google Drive per cabang dan database Supabase",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
