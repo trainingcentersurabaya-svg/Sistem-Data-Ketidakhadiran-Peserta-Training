@@ -153,7 +153,7 @@ insert into users (
   must_change_password
 ) values (
   'admin',
-  crypt('GANTI_PASSWORD_INI', gen_salt('bf', 10)),
+  crypt('admin123', gen_salt('bf', 10)),
   'Admin Pusat Utama',
   'admin_pusat',
   null,
