@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { getSupabaseAdmin } from '@/lib/supabase';
-import { verifyDriveFolderAccess } from '@/lib/drive';
+import { drivePing } from '@/lib/drive';
 import { decryptSecret } from '@/lib/crypto';
 
 export const runtime = 'nodejs';
@@ -15,49 +15,45 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    let { branch_id, folder_id, credentials_json } = body;
+    let { branch_id, drive_bridge_url, drive_bridge_secret } = body;
 
-    let credsObj = null;
+    let targetUrl = drive_bridge_url ? drive_bridge_url.trim() : null;
+    let targetSecret = drive_bridge_secret ? drive_bridge_secret.trim() : null;
 
-    if (credentials_json && credentials_json.trim()) {
-      try {
-        credsObj = JSON.parse(credentials_json.trim());
-      } catch (e) {
-        return NextResponse.json(
-          { ok: false, error: 'JSON Service Account tidak valid' },
-          { status: 400 }
-        );
-      }
-    } else if (branch_id) {
+    // Jika secret tidak disertakan langsung (misal saat edit data cabang yang sudah ada), ambil dari database
+    if (branch_id && (!targetSecret || !targetUrl)) {
       const supabase = getSupabaseAdmin();
       const { data: branch, error } = await supabase
         .from('branches')
-        .select('drive_credentials, drive_folder_id')
+        .select('drive_bridge_url, drive_bridge_secret_enc')
         .eq('id', branch_id)
         .single();
 
-      if (error || !branch || !branch.drive_credentials) {
+      if (error || !branch || !branch.drive_bridge_url || !branch.drive_bridge_secret_enc) {
         return NextResponse.json(
-          { ok: false, error: 'Cabang belum memiliki kredensial Google Drive tersimpan' },
+          { ok: false, error: 'Cabang belum memiliki URL dan Secret Drive Bridge tersimpan' },
           { status: 400 }
         );
       }
 
-      credsObj = JSON.parse(decryptSecret(branch.drive_credentials));
-      if (!folder_id) folder_id = branch.drive_folder_id;
+      if (!targetUrl) targetUrl = branch.drive_bridge_url;
+      if (!targetSecret) targetSecret = decryptSecret(branch.drive_bridge_secret_enc);
     }
 
-    if (!credsObj || !folder_id) {
+    if (!targetUrl || !targetSecret) {
       return NextResponse.json(
-        { ok: false, error: 'Kredensial Service Account dan ID Folder Google Drive wajib diisi' },
+        { ok: false, error: 'URL Drive Bridge dan Secret Key wajib diisi untuk melakukan pengujian' },
         { status: 400 }
       );
     }
 
-    const testRes = await verifyDriveFolderAccess(credsObj, folder_id.trim());
+    const testRes = await drivePing({
+      url: targetUrl,
+      secret: targetSecret,
+    });
 
     if (!testRes.ok) {
-      return NextResponse.json({ ok: false, error: testRes.error }, { status: 400 });
+      return NextResponse.json({ ok: false, error: testRes.error || 'Uji koneksi gagal' }, { status: 400 });
     }
 
     return NextResponse.json({
@@ -66,10 +62,10 @@ export async function POST(request) {
       folderName: testRes.folderName,
     });
   } catch (err) {
-    console.error('[Test Drive Error]:', err);
+    console.error('[Test Drive Bridge Error]:', err);
     return NextResponse.json(
-      { ok: false, error: 'Gagal menguji koneksi Google Drive: ' + err.message },
-      { status: 500 }
+      { ok: false, error: err.message || 'Gagal menguji koneksi Google Drive Bridge' },
+      { status: 400 }
     );
   }
 }

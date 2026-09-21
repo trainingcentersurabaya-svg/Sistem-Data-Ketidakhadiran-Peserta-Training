@@ -18,6 +18,7 @@ import {
   Briefcase,
   User,
   Hash,
+  AlertTriangle,
 } from 'lucide-react';
 import { MAX_FILE_SIZE_BYTES } from '@/lib/config';
 
@@ -116,6 +117,14 @@ export default function InputPage() {
   async function handleSubmit(e) {
     e.preventDefault();
 
+    const selectedBranch = meta?.branches?.find((b) => b.id === branchId);
+    if (selectedBranch && !selectedBranch.driveReady) {
+      toast.error(
+        `Input data diblokir: Google Drive cabang "${selectedBranch.name}" belum terhubung. Hubungi Admin untuk setup Drive Bridge.`
+      );
+      return;
+    }
+
     if (!/^\d{8,16}$/.test(nik)) {
       toast.error('NIK harus berupa 8 sampai 16 digit angka');
       return;
@@ -171,6 +180,8 @@ export default function InputPage() {
   }
 
   const isAdminPusat = meta?.userRole === 'admin_pusat';
+  const selectedBranch = meta?.branches?.find((b) => b.id === branchId);
+  const isDriveReady = selectedBranch ? Boolean(selectedBranch.driveReady) : true;
 
   if (loadingMeta) {
     return (
@@ -294,7 +305,7 @@ export default function InputPage() {
                     >
                       {meta?.branches?.map((b) => (
                         <option key={b.id} value={b.id}>
-                          {b.code} - {b.name}
+                          {b.code} - {b.name} {!b.driveReady ? '⚠️ [Drive Belum Terhubung]' : ''}
                         </option>
                       ))}
                     </select>
@@ -302,11 +313,22 @@ export default function InputPage() {
                     <input
                       type="text"
                       disabled
-                      value={meta?.branches?.find((b) => b.id === branchId)?.name || 'Cabang Saya'}
+                      value={selectedBranch?.name || 'Cabang Saya'}
                       className="w-full pl-9 pr-3 py-2.5 text-sm bg-gray-100 border border-gray-200 rounded-xl text-gray-600 font-semibold cursor-not-allowed min-h-[44px]"
                     />
                   )}
                 </div>
+                {!isDriveReady && (
+                  <div className="mt-2.5 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">Google Drive cabang ini belum terhubung.</span>
+                      <p className="mt-0.5 text-amber-700">
+                        Input data untuk cabang <strong>{selectedBranch?.name}</strong> diblokir hingga konfigurasi Drive Bridge diselesaikan di menu Admin &gt; Cabang.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -513,31 +535,42 @@ export default function InputPage() {
           </div>
 
           {/* Submit Button */}
-          <div className="pt-4 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={() => router.push('/rekap')}
-              className="px-5 py-2.5 text-sm font-semibold text-gray-600 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors min-h-[44px]"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-6 py-2.5 text-sm font-bold text-white bg-[#0056b3] hover:bg-blue-700 rounded-xl shadow-md transition-all flex items-center gap-2 min-h-[44px] disabled:opacity-60"
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Mengunggah & Menyimpan...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Simpan Data Ketidakhadiran</span>
-                </>
-              )}
-            </button>
+          <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+            {!isDriveReady ? (
+              <div className="flex items-center gap-2 text-xs font-bold text-amber-800 bg-amber-50 px-3.5 py-2.5 rounded-xl border border-amber-200 w-full sm:w-auto">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>Form terkunci: Drive cabang {selectedBranch?.name} belum terhubung</span>
+              </div>
+            ) : (
+              <div />
+            )}
+
+            <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={() => router.push('/rekap')}
+                className="px-5 py-2.5 text-sm font-semibold text-gray-600 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors min-h-[44px]"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={submitting || !isDriveReady}
+                className="px-6 py-2.5 text-sm font-bold text-white bg-[#0056b3] hover:bg-blue-700 rounded-xl shadow-md transition-all flex items-center gap-2 min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Mengunggah & Menyimpan...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{isDriveReady ? 'Simpan Data Ketidakhadiran' : 'Drive Cabang Belum Terhubung'}</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </form>

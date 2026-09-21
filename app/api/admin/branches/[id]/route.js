@@ -14,9 +14,9 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 403 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const body = await request.json();
-    const { name, code, drive_folder_id, drive_credentials_json, is_active } = body;
+    const { name, code, drive_bridge_url, drive_bridge_secret, is_active } = body;
 
     const supabase = getSupabaseAdmin();
 
@@ -26,26 +26,20 @@ export async function PUT(request, { params }) {
 
     if (name !== undefined) updatePayload.name = name.trim();
     if (code !== undefined) updatePayload.code = code.trim().toUpperCase();
-    if (drive_folder_id !== undefined) updatePayload.drive_folder_id = drive_folder_id ? drive_folder_id.trim() : null;
+    if (drive_bridge_url !== undefined) {
+      updatePayload.drive_bridge_url = drive_bridge_url ? drive_bridge_url.trim() : null;
+    }
     if (is_active !== undefined) updatePayload.is_active = Boolean(is_active);
 
-    if (drive_credentials_json && drive_credentials_json.trim()) {
-      try {
-        JSON.parse(drive_credentials_json.trim());
-        updatePayload.drive_credentials = encryptSecret(drive_credentials_json.trim());
-      } catch (jsonErr) {
-        return NextResponse.json(
-          { ok: false, error: 'Format JSON kredensial Service Account tidak valid' },
-          { status: 400 }
-        );
-      }
+    if (drive_bridge_secret !== undefined && drive_bridge_secret.trim()) {
+      updatePayload.drive_bridge_secret_enc = encryptSecret(drive_bridge_secret.trim());
     }
 
     const { data: updated, error } = await supabase
       .from('branches')
       .update(updatePayload)
       .eq('id', id)
-      .select('id, name, code, drive_folder_id, is_active, created_at')
+      .select('id, name, code, drive_bridge_url, drive_bridge_secret_enc, is_active, created_at')
       .single();
 
     if (error) {
@@ -54,7 +48,19 @@ export async function PUT(request, { params }) {
 
     await auditLog(session.userId, 'UPDATE_BRANCH', { branchId: id });
 
-    return NextResponse.json({ ok: true, message: 'Cabang berhasil diperbarui', data: updated });
+    return NextResponse.json({
+      ok: true,
+      message: 'Data cabang berhasil diperbarui',
+      data: {
+        id: updated.id,
+        name: updated.name,
+        code: updated.code,
+        drive_bridge_url: updated.drive_bridge_url,
+        is_active: updated.is_active,
+        created_at: updated.created_at,
+        has_drive_bridge: Boolean(updated.drive_bridge_url && updated.drive_bridge_secret_enc),
+      },
+    });
   } catch (err) {
     console.error('[Branch PUT Error]:', err);
     return NextResponse.json({ ok: false, error: 'Terjadi kesalahan sistem' }, { status: 500 });
@@ -68,7 +74,7 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 403 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const supabase = getSupabaseAdmin();
 
     // Cek apakah ada catatan ketidakhadiran di cabang ini
@@ -90,7 +96,7 @@ export async function DELETE(request, { params }) {
     const { error: delErr } = await supabase.from('branches').delete().eq('id', id);
 
     if (delErr) {
-      return NextResponse.json({ ok: false, error: 'Gagal menghapus cabang' }, { status: 500 });
+      return NextResponse.json({ ok: false, error: 'Gagal menghapus cabang: ' + delErr.message }, { status: 500 });
     }
 
     await auditLog(session.userId, 'DELETE_BRANCH', { branchId: id });

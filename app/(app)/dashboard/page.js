@@ -208,7 +208,7 @@ export default function DashboardPage() {
             />
             <StatCard
               title="Rasio Kelengkapan"
-              value={`${stats?.proofRatePercentage ?? 0}%`}
+              value={!stats?.totalAbsent || isNaN(stats?.proofRatePercentage) ? '0%' : `${stats.proofRatePercentage}%`}
               subtitle="Tingkat kepatuhan bukti"
               icon={Percent}
               color="yellow"

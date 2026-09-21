@@ -16,12 +16,23 @@ export async function GET(request) {
     const supabase = getSupabaseAdmin();
 
     const [branchesRes, trainingsRes, reasonsRes] = await Promise.all([
-      supabase.from('branches').select('id, name, code, is_active').order('name'),
+      supabase
+        .from('branches')
+        .select('id, name, code, is_active, drive_bridge_url, drive_bridge_secret_enc')
+        .order('name'),
       supabase.from('training_types').select('id, name, is_active').order('name'),
       supabase.from('absence_reasons').select('id, name, is_active').order('name'),
     ]);
 
-    const branches = branchesRes.data || [];
+    // Format data cabang: sediakan flag `driveReady` tanpa mengekspos secret
+    const branches = (branchesRes.data || []).map((b) => ({
+      id: b.id,
+      name: b.name,
+      code: b.code,
+      is_active: b.is_active,
+      driveReady: Boolean(b.drive_bridge_url && b.drive_bridge_secret_enc),
+    }));
+
     const trainings = trainingsRes.data || [];
     const reasons = reasonsRes.data || [];
 

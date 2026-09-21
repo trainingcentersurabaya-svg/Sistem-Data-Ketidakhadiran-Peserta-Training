@@ -2,53 +2,12 @@
 import { NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { getSupabaseAdmin } from '@/lib/supabase';
-import { validateEvidenceFile, uploadFileToDrive, deleteFileFromDrive } from '@/lib/drive';
-import { decryptSecret } from '@/lib/crypto';
+import { validateEvidenceFile, driveUpload, driveTrash } from '@/lib/drive';
 import { auditLog } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 
-// GET: Ambil detail satu catatan
-export async function GET(request, { params }) {
-  try {
-    const session = await getSessionFromRequest(request);
-    if (!session) {
-      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const { id } = params;
-    const supabase = getSupabaseAdmin();
-
-    const { data: record, error } = await supabase
-      .from('absence_records')
-      .select(
-        `
-        *,
-        branches ( id, name, code ),
-        training_types ( id, name ),
-        absence_reasons ( id, name )
-      `
-      )
-      .eq('id', id)
-      .single();
-
-    if (error || !record) {
-      return NextResponse.json({ ok: false, error: 'Catatan tidak ditemukan' }, { status: 404 });
-    }
-
-    // Role check
-    if (session.role !== 'admin_pusat' && record.branch_id !== session.branchId) {
-      return NextResponse.json({ ok: false, error: 'Akses ditolak' }, { status: 403 });
-    }
-
-    return NextResponse.json({ ok: true, data: record });
-  } catch (err) {
-    console.error('[Record Detail Error]:', err);
-    return NextResponse.json({ ok: false, error: 'Terjadi kesalahan sistem' }, { status: 500 });
-  }
-}
-
-// PUT: Perbarui data catatan & opsi ganti berkas bukti
+// PUT: Perbarui catatan ketidakhadiran beserta berkas bukti pengganti
 export async function PUT(request, { params }) {
   try {
     const session = await getSessionFromRequest(request);
@@ -56,13 +15,13 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const supabase = getSupabaseAdmin();
 
-    // Cek catatan lama
+    // Dapatkan data lama untuk pengecekan akses dan file lama
     const { data: oldRecord, error: findErr } = await supabase
       .from('absence_records')
-      .select('*, branches ( id, name, code, drive_folder_id, drive_credentials )')
+      .select('*, branches ( id, name, code, drive_bridge_url, drive_bridge_secret_enc )')
       .eq('id', id)
       .single();
 
@@ -76,6 +35,7 @@ export async function PUT(request, { params }) {
     }
 
     const formData = await request.formData();
+
     const nik = formData.get('nik')?.toString().trim();
     const nama_peserta = formData.get('nama_peserta')?.toString().trim();
     const jabatan = formData.get('jabatan')?.toString().trim();
@@ -92,10 +52,20 @@ export async function PUT(request, { params }) {
     }
 
     if (!nik || !nama_peserta || !jabatan || !training_id || !batch || !tanggal_pelaksanaan || !branch_id || !alasan_id) {
-      return NextResponse.json({ ok: false, error: 'Kolom wajib diisi' }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: 'Semua kolom bertanda bintang (*) wajib diisi' },
+        { status: 400 }
+      );
     }
 
-    let updatePayload = {
+    if (!/^\d{8,16}$/.test(nik)) {
+      return NextResponse.json(
+        { ok: false, error: 'Format NIK tidak valid. NIK harus berupa 8 hingga 16 digit angka.' },
+        { status: 400 }
+      );
+    }
+
+    const updatePayload = {
       nik,
       nama_peserta,
       jabatan,
@@ -116,42 +86,40 @@ export async function PUT(request, { params }) {
       }
 
       const branch = oldRecord.branches;
-      if (!branch?.drive_credentials || !branch?.drive_folder_id) {
+      if (!branch?.drive_bridge_url || !branch?.drive_bridge_secret_enc) {
         return NextResponse.json(
-          { ok: false, error: 'Cabang belum terhubung ke Google Drive' },
+          { ok: false, error: 'Google Drive cabang belum terhubung. Hubungi Admin untuk setup Drive Bridge.' },
           { status: 400 }
         );
       }
 
-      const credentials = JSON.parse(decryptSecret(branch.drive_credentials));
-
       // Hapus file lama di Drive jika ada
       if (oldRecord.drive_file_id) {
         try {
-          await deleteFileFromDrive(credentials, oldRecord.drive_file_id);
+          await driveTrash(branch, oldRecord.drive_file_id);
         } catch (delErr) {
-          console.warn('[Old file deletion ignored]:', delErr.message);
+          console.warn('[Old file trash ignored]:', delErr.message);
         }
       }
 
-      // Unggah file baru
-      const uploadRes = await uploadFileToDrive({
-        credentials,
-        folderId: branch.drive_folder_id,
-        file,
-        customMetadata: {
-          nik,
-          nama_peserta,
-          tanggal_pelaksanaan,
-          branch_code: branch.code,
-        },
+      // Unggah file baru ke Drive Bridge cabang
+      const arrayBuffer = await file.arrayBuffer();
+      const base64 = Buffer.from(arrayBuffer).toString('base64');
+      const ext = file.name.split('.').pop() || 'bin';
+      const cleanNama = nama_peserta.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeFileName = `${nik}_BA_${cleanNama}_${tanggal_pelaksanaan}.${ext}`;
+
+      const uploadRes = await driveUpload(branch, {
+        fileName: safeFileName,
+        mimeType: file.type,
+        base64,
       });
 
       updatePayload.drive_file_id = uploadRes.fileId;
       updatePayload.drive_file_name = uploadRes.fileName;
       updatePayload.drive_file_url = uploadRes.webViewLink;
-      updatePayload.file_mime_type = uploadRes.mimeType;
-      updatePayload.file_size_bytes = uploadRes.fileSize;
+      updatePayload.file_mime_type = file.type;
+      updatePayload.file_size_bytes = file.size;
     }
 
     const { data: updatedRecord, error: updateErr } = await supabase
@@ -163,7 +131,7 @@ export async function PUT(request, { params }) {
 
     if (updateErr) {
       console.error('[Record Update Error]:', updateErr);
-      return NextResponse.json({ ok: false, error: 'Gagal memperbarui catatan' }, { status: 500 });
+      return NextResponse.json({ ok: false, error: 'Gagal memperbarui catatan: ' + updateErr.message }, { status: 500 });
     }
 
     await auditLog(session.userId, 'UPDATE_RECORD', {
@@ -179,11 +147,11 @@ export async function PUT(request, { params }) {
     });
   } catch (err) {
     console.error('[Record PUT Error]:', err);
-    return NextResponse.json({ ok: false, error: 'Terjadi kesalahan sistem' }, { status: 500 });
+    return NextResponse.json({ ok: false, error: 'Terjadi kesalahan sistem: ' + err.message }, { status: 500 });
   }
 }
 
-// DELETE: Hapus catatan beserta file bukti di Google Drive
+// DELETE: Hapus catatan beserta file bukti di Google Drive cabang
 export async function DELETE(request, { params }) {
   try {
     const session = await getSessionFromRequest(request);
@@ -191,12 +159,12 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const supabase = getSupabaseAdmin();
 
     const { data: record, error: findErr } = await supabase
       .from('absence_records')
-      .select('*, branches ( id, name, drive_credentials )')
+      .select('*, branches ( id, name, drive_bridge_url, drive_bridge_secret_enc )')
       .eq('id', id)
       .single();
 
@@ -208,13 +176,12 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Akses ditolak' }, { status: 403 });
     }
 
-    // Hapus file dari Google Drive jika ada
-    if (record.drive_file_id && record.branches?.drive_credentials) {
+    // Hapus file dari Google Drive cabang via Drive Bridge jika ada
+    if (record.drive_file_id && record.branches?.drive_bridge_url && record.branches?.drive_bridge_secret_enc) {
       try {
-        const credentials = JSON.parse(decryptSecret(record.branches.drive_credentials));
-        await deleteFileFromDrive(credentials, record.drive_file_id);
+        await driveTrash(record.branches, record.drive_file_id);
       } catch (driveErr) {
-        console.error('[Drive Delete Warning]:', driveErr.message);
+        console.warn('[Drive Delete Warning]:', driveErr.message);
         // Tetap lanjut hapus record dari database walau drive gagal/berkas sudah tidak ada
       }
     }

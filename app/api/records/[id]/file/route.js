@@ -2,8 +2,7 @@
 import { NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { getSupabaseAdmin } from '@/lib/supabase';
-import { getFileStreamFromDrive } from '@/lib/drive';
-import { decryptSecret } from '@/lib/crypto';
+import { driveGetFile } from '@/lib/drive';
 
 export const runtime = 'nodejs';
 
@@ -14,12 +13,12 @@ export async function GET(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const supabase = getSupabaseAdmin();
 
     const { data: record, error } = await supabase
       .from('absence_records')
-      .select('id, branch_id, drive_file_id, drive_file_name, file_mime_type, branches ( id, drive_credentials )')
+      .select('id, branch_id, drive_file_id, drive_file_name, file_mime_type, branches ( id, name, drive_bridge_url, drive_bridge_secret_enc )')
       .eq('id', id)
       .single();
 
@@ -31,24 +30,27 @@ export async function GET(request, { params }) {
       return NextResponse.json({ ok: false, error: 'Akses ditolak' }, { status: 403 });
     }
 
-    if (!record.branches?.drive_credentials) {
-      return NextResponse.json({ ok: false, error: 'Kredensial Drive belum dikonfigurasi' }, { status: 400 });
+    if (!record.branches?.drive_bridge_url || !record.branches?.drive_bridge_secret_enc) {
+      return NextResponse.json({ ok: false, error: 'Kredensial Drive Bridge belum dikonfigurasi pada cabang ini' }, { status: 400 });
     }
 
-    const credentials = JSON.parse(decryptSecret(record.branches.drive_credentials));
-    const { stream, mimeType } = await getFileStreamFromDrive(credentials, record.drive_file_id);
+    const fileResult = await driveGetFile(record.branches, record.drive_file_id);
+
+    const fileBuffer = Buffer.from(fileResult.base64, 'base64');
+    const mimeType = fileResult.mimeType || record.file_mime_type || 'application/octet-stream';
+    const fileName = fileResult.name || record.drive_file_name || 'bukti-berita-acara';
 
     const headers = new Headers();
-    headers.set('Content-Type', mimeType || record.file_mime_type || 'application/octet-stream');
-    headers.set('Content-Disposition', `inline; filename="${record.drive_file_name || 'bukti-berita-acara'}"`);
+    headers.set('Content-Type', mimeType);
+    headers.set('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
     headers.set('Cache-Control', 'public, max-age=3600');
 
-    return new Response(stream, {
+    return new Response(fileBuffer, {
       status: 200,
       headers,
     });
   } catch (err) {
     console.error('[File Stream Error]:', err);
-    return NextResponse.json({ ok: false, error: 'Gagal mengambil berkas bukti dari Google Drive' }, { status: 500 });
+    return NextResponse.json({ ok: false, error: 'Gagal mengambil berkas bukti dari Google Drive: ' + err.message }, { status: 500 });
   }
 }

@@ -1,208 +1,226 @@
 /**
- * ==============================================================================
- * GOOGLE APPS SCRIPT: DRIVE BRIDGE PER CABANG
- * ==============================================================================
- * Script ini dipasang pada akun Google milik masing-masing Cabang.
- * Berfungsi sebagai jembatan penyimpanan bukti file (foto/PDF) di Google Drive cabang.
- * 
- * Script Properties yang WAJIB diatur di Project Settings (ikon gerigi):
- * 1. ROOT_FOLDER_ID : ID folder di Google Drive tempat menyimpan bukti cabang
- * 2. BRIDGE_SECRET   : Kata sandi rahasia cabang (minimal 24 karakter acak)
- * ==============================================================================
+ * ============================================================================
+ * GOOGLE APPS SCRIPT: DRIVE BRIDGE CABANG
+ * SISTEM DATA KETIDAKHADIRAN PESERTA TRAINING INDOMARET
+ * ============================================================================
+ *
+ * Petunjuk Singkat:
+ * 1. Buat folder baru di Google Drive akun cabang Anda (misal: "BUKTI_TRAINING_SBY").
+ * 2. Salin ID Folder tersebut ke variabel ROOT_FOLDER_ID di bawah ini.
+ * 3. Tentukan kata sandi rahasia cabang Anda pada variabel SHARED_SECRET.
+ * 4. Klik "Deploy" > "New deployment" > Pilih jenis "Web app".
+ *    - Execute as: "Me" (email cabang Anda)
+ *    - Who has access: "Anyone"
+ * 5. Salin URL Web App yang dihasilkan ke aplikasi web di Menu Admin > Cabang.
+ * ============================================================================
  */
 
-// Batas ukuran base64 (~3.5 MB sebelum decode menjadi ~2.5 MB file mentah)
-const MAX_BASE64_LENGTH = 5 * 1024 * 1024;
+// 1. ID Folder Google Drive khusus penyimpanan bukti pelatihan cabang Anda.
+//    Dapatkan dari tautan folder: drive.google.com/drive/folders/[ID_FOLDER]
+var ROOT_FOLDER_ID = 'MASUKKAN_ID_FOLDER_GOOGLE_DRIVE_CABANG_DI_SINI';
 
-// MIME Types yang diizinkan untuk bukti Berita Acara
-const ALLOWED_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'application/pdf'
-];
+// 2. Kata sandi rahasia penghubung (Secret Key).
+//    Pastikan sama persis dengan yang dimasukkan di menu Admin Cabang aplikasi web.
+var SHARED_SECRET = 'MASUKKAN_SECRET_RAHASIA_CABANG_DI_SINI';
 
 /**
- * Handle GET: untuk verifikasi status dasar di browser
+ * Handler HTTP GET untuk pengujian cepat di browser
  */
 function doGet(e) {
-  return ContentService.createTextOutput('Drive Bridge aktif')
-    .setMimeType(ContentService.MimeType.TEXT);
+  return createJsonResponse({
+    ok: true,
+    message: 'Drive Bridge Aktif. Gunakan metode POST dari server aplikasi web.',
+    timestamp: new Date().toISOString(),
+  });
 }
 
 /**
- * Handle POST: memproses ping, upload, get, dan trash
+ * Handler HTTP POST utama untuk melayani permintaan dari server aplikasi web
  */
 function doPost(e) {
   try {
     if (!e || !e.postData || !e.postData.contents) {
-      return responseJson({ ok: false, error: 'Data permintaan kosong' });
+      return createJsonResponse({ ok: false, error: 'Bad Request: Data POST kosong' }, 400);
     }
 
-    let payload;
+    var payload = JSON.parse(e.postData.contents);
+    var secret = payload.secret;
+    var action = payload.action;
+
+    // 1. Verifikasi Secret Key
+    if (!secret || secret !== getEffectiveSecret()) {
+      return createJsonResponse({ ok: false, error: 'Akses Ditolak: Secret Key Drive Bridge tidak cocok' }, 401);
+    }
+
+    // 2. Ambil Folder Root
+    var folderId = getEffectiveFolderId();
+    if (!folderId || folderId.indexOf('MASUKKAN_') === 0) {
+      return createJsonResponse({ ok: false, error: 'Konfigurasi Error: ROOT_FOLDER_ID belum diatur pada Code.gs' }, 500);
+    }
+
+    var rootFolder;
     try {
-      payload = JSON.parse(e.postData.contents);
-    } catch (parseErr) {
-      return responseJson({ ok: false, error: 'Format JSON tidak valid' });
-    }
-
-    // Ambil konfigurasi dari Script Properties
-    const scriptProps = PropertiesService.getScriptProperties();
-    const configuredSecret = scriptProps.getProperty('BRIDGE_SECRET');
-    const rootFolderId = scriptProps.getProperty('ROOT_FOLDER_ID');
-
-    if (!configuredSecret || !rootFolderId) {
-      return responseJson({
-        ok: false,
-        error: 'Drive Bridge belum dikonfigurasi lengkap (BRIDGE_SECRET atau ROOT_FOLDER_ID kosong)'
-      });
-    }
-
-    // 1. Verifikasi Keamanan Secret
-    if (!payload.secret || payload.secret !== configuredSecret) {
-      return responseJson({ ok: false, error: 'Unauthorized: Secret tidak cocok' });
-    }
-
-    // Dapatkan Root Folder Drive Cabang
-    let rootFolder;
-    try {
-      rootFolder = DriveApp.getFolderById(rootFolderId);
+      rootFolder = DriveApp.getFolderById(folderId);
     } catch (fErr) {
-      return responseJson({
-        ok: false,
-        error: 'ROOT_FOLDER_ID tidak ditemukan atau akun tidak memiliki izin akses folder'
-      });
+      return createJsonResponse({ ok: false, error: 'Folder Google Drive tidak ditemukan atau tidak dapat diakses' }, 404);
     }
 
-    const action = payload.action;
+    // 3. Eksekusi Aksi
+    switch (action) {
+      case 'ping':
+        return handlePing(rootFolder);
 
-    // -------------------------------------------------------------
-    // AKSI 1: PING (Tes Koneksi & Nama Folder)
-    // -------------------------------------------------------------
-    if (action === 'ping') {
-      return responseJson({
-        ok: true,
-        folderName: rootFolder.getName()
-      });
+      case 'upload':
+        return handleUpload(rootFolder, payload);
+
+      case 'get':
+        return handleGet(rootFolder, payload);
+
+      case 'trash':
+        return handleTrash(rootFolder, payload);
+
+      default:
+        return createJsonResponse({ ok: false, error: 'Aksi "' + action + '" tidak dikenali' }, 400);
     }
-
-    // -------------------------------------------------------------
-    // AKSI 2: UPLOAD (Simpan Berkas Baru ke Root Folder Cabang)
-    // -------------------------------------------------------------
-    if (action === 'upload') {
-      const { fileName, mimeType, base64 } = payload;
-
-      if (!fileName || !mimeType || !base64) {
-        return responseJson({ ok: false, error: 'Parameter upload tidak lengkap' });
-      }
-
-      if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
-        return responseJson({ ok: false, error: 'Format file ditolak. Hanya JPG, PNG, atau PDF yang diizinkan' });
-      }
-
-      if (base64.length > MAX_BASE64_LENGTH) {
-        return responseJson({ ok: false, error: 'Ukuran file terlalu besar (maksimal ~3 MB)' });
-      }
-
-      const decodedBytes = Utilities.base64Decode(base64);
-      const blob = Utilities.newBlob(decodedBytes, mimeType, fileName);
-      const createdFile = rootFolder.createFile(blob);
-
-      return responseJson({
-        ok: true,
-        fileId: createdFile.getId()
-      });
-    }
-
-    // -------------------------------------------------------------
-    // AKSI 3: GET (Ambil Konten Berkas Bukti)
-    // -------------------------------------------------------------
-    if (action === 'get') {
-      const { fileId } = payload;
-      if (!fileId) {
-        return responseJson({ ok: false, error: 'fileId wajib diisi' });
-      }
-
-      let file;
-      try {
-        file = DriveApp.getFileById(fileId);
-      } catch (notFound) {
-        return responseJson({ ok: false, error: 'File tidak ditemukan di Google Drive cabang' });
-      }
-
-      // Validasi keamanan: Pastikan file merupakan anak langsung dari ROOT_FOLDER_ID
-      if (!isInRoot(file, rootFolderId)) {
-        return responseJson({ ok: false, error: 'Akses ditolak: File berada di luar folder bukti cabang' });
-      }
-
-      const blob = file.getBlob();
-      const base64Content = Utilities.base64Encode(blob.getBytes());
-
-      return responseJson({
-        ok: true,
-        name: file.getName(),
-        mimeType: blob.getContentType(),
-        base64: base64Content
-      });
-    }
-
-    // -------------------------------------------------------------
-    // AKSI 4: TRASH (Pindahkan Berkas Bukti ke Sampah Drive)
-    // -------------------------------------------------------------
-    if (action === 'trash') {
-      const { fileId } = payload;
-      if (!fileId) {
-        return responseJson({ ok: false, error: 'fileId wajib diisi' });
-      }
-
-      let file;
-      try {
-        file = DriveApp.getFileById(fileId);
-      } catch (notFound) {
-        // Jika file sudah tidak ada, anggap operasi selesai
-        return responseJson({ ok: true, message: 'File sudah tidak ada' });
-      }
-
-      // Validasi keamanan: Pastikan file merupakan anak langsung dari ROOT_FOLDER_ID
-      if (!isInRoot(file, rootFolderId)) {
-        return responseJson({ ok: false, error: 'Akses ditolak: File berada di luar folder bukti cabang' });
-      }
-
-      file.setTrashed(true);
-      return responseJson({ ok: true });
-    }
-
-    return responseJson({ ok: false, error: 'Aksi tidak dikenal: ' + action });
-
-  } catch (globalErr) {
-    return responseJson({
-      ok: false,
-      error: 'Terjadi kesalahan internal pada Google Apps Script: ' + globalErr.toString()
-    });
+  } catch (err) {
+    return createJsonResponse({ ok: false, error: 'Terjadi kesalahan pada script: ' + err.toString() }, 500);
   }
 }
 
 /**
- * Validasi apakah file berada langsung di dalam ROOT_FOLDER_ID
+ * Aksi: PING (Cek koneksi dan ambil nama folder)
  */
-function isInRoot(file, rootFolderId) {
+function handlePing(folder) {
+  return createJsonResponse({
+    ok: true,
+    folderName: folder.getName(),
+    folderId: folder.getId(),
+  });
+}
+
+/**
+ * Aksi: UPLOAD (Simpan file baru ke dalam root folder cabang)
+ */
+function handleUpload(folder, payload) {
+  var fileName = payload.fileName;
+  var mimeType = payload.mimeType || 'application/octet-stream';
+  var base64Data = payload.base64;
+
+  if (!fileName || !base64Data) {
+    return createJsonResponse({ ok: false, error: 'Parameter fileName dan base64 wajib diisi' }, 400);
+  }
+
+  var bytes = Utilities.base64Decode(base64Data);
+  var blob = Utilities.newBlob(bytes, mimeType, fileName);
+  var file = folder.createFile(blob);
+
+  return createJsonResponse({
+    ok: true,
+    fileId: file.getId(),
+    fileName: file.getName(),
+    webViewLink: file.getUrl(),
+    mimeType: file.getMimeType(),
+    size: file.getSize(),
+  });
+}
+
+/**
+ * Aksi: GET (Mengambil file dengan validasi keamanan folder)
+ */
+function handleGet(rootFolder, payload) {
+  var fileId = payload.fileId;
+  if (!fileId) {
+    return createJsonResponse({ ok: false, error: 'fileId wajib diisi' }, 400);
+  }
+
+  var file;
   try {
-    const parents = file.getParents();
-    while (parents.hasNext()) {
-      const parent = parents.next();
-      if (parent.getId() === rootFolderId) {
-        return true;
-      }
-    }
+    file = DriveApp.getFileById(fileId);
   } catch (err) {
-    return false;
+    return createJsonResponse({ ok: false, error: 'Berkas bukti tidak ditemukan di Google Drive' }, 404);
+  }
+
+  // Validasi Keamanan: Pastikan berkas benar berada di dalam ROOT_FOLDER_ID cabang ini
+  if (!isFileInsideFolder(file, rootFolder.getId())) {
+    return createJsonResponse({ ok: false, error: 'Akses Ditolak: Berkas berada di luar folder yang diizinkan' }, 403);
+  }
+
+  var blob = file.getBlob();
+  var base64 = Utilities.base64Encode(blob.getBytes());
+
+  return createJsonResponse({
+    ok: true,
+    name: file.getName(),
+    mimeType: file.getMimeType(),
+    size: file.getSize(),
+    base64: base64,
+  });
+}
+
+/**
+ * Aksi: TRASH (Pindahkan file ke sampah Google Drive)
+ */
+function handleTrash(rootFolder, payload) {
+  var fileId = payload.fileId;
+  if (!fileId) {
+    return createJsonResponse({ ok: false, error: 'fileId wajib diisi' }, 400);
+  }
+
+  var file;
+  try {
+    file = DriveApp.getFileById(fileId);
+  } catch (err) {
+    return createJsonResponse({ ok: true, message: 'Berkas sudah tidak ada atau telah dihapus' });
+  }
+
+  // Validasi Keamanan: Pastikan berkas benar berada di dalam ROOT_FOLDER_ID cabang ini
+  if (!isFileInsideFolder(file, rootFolder.getId())) {
+    return createJsonResponse({ ok: false, error: 'Akses Ditolak: Berkas berada di luar folder yang diizinkan' }, 403);
+  }
+
+  file.setTrashed(true);
+
+  return createJsonResponse({
+    ok: true,
+    message: 'Berkas berhasil dipindahkan ke tempat sampah Google Drive',
+  });
+}
+
+/**
+ * Pemeriksaan keamanan apakah file berada dalam folder yang diizinkan
+ */
+function isFileInsideFolder(file, allowedFolderId) {
+  var parents = file.getParents();
+  while (parents.hasNext()) {
+    var parent = parents.next();
+    if (parent.getId() === allowedFolderId) {
+      return true;
+    }
   }
   return false;
 }
 
 /**
- * Helper untuk mengembalikan respons JSON aman
+ * Mengambil Secret (mendukung Script Properties atau konstanta di atas)
  */
-function responseJson(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+function getEffectiveSecret() {
+  var prop = PropertiesService.getScriptProperties().getProperty('SHARED_SECRET');
+  return prop || SHARED_SECRET;
+}
+
+/**
+ * Mengambil Folder ID (mendukung Script Properties atau konstanta di atas)
+ */
+function getEffectiveFolderId() {
+  var prop = PropertiesService.getScriptProperties().getProperty('ROOT_FOLDER_ID');
+  return prop || ROOT_FOLDER_ID;
+}
+
+/**
+ * Helper menghasilkan response JSON standar
+ */
+function createJsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(
+    ContentService.MimeType.JSON
+  );
 }

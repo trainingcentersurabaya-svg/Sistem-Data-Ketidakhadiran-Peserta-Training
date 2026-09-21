@@ -16,6 +16,8 @@ import {
   ShieldCheck,
   AlertTriangle,
   Play,
+  KeyRound,
+  Link2,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 
@@ -28,8 +30,8 @@ export default function AdminCabangPage() {
   const [editingBranch, setEditingBranch] = useState(null);
   const [formName, setFormName] = useState('');
   const [formCode, setFormCode] = useState('');
-  const [formFolderId, setFormFolderId] = useState('');
-  const [formCredsJson, setFormCredsJson] = useState('');
+  const [formBridgeUrl, setFormBridgeUrl] = useState('');
+  const [formBridgeSecret, setFormBridgeSecret] = useState('');
   const [formIsActive, setFormIsActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingDrive, setTestingDrive] = useState(false);
@@ -62,8 +64,8 @@ export default function AdminCabangPage() {
     setEditingBranch(null);
     setFormName('');
     setFormCode('');
-    setFormFolderId('');
-    setFormCredsJson('');
+    setFormBridgeUrl('');
+    setFormBridgeSecret('');
     setFormIsActive(true);
     setIsModalOpen(true);
   }
@@ -72,20 +74,20 @@ export default function AdminCabangPage() {
     setEditingBranch(branch);
     setFormName(branch.name);
     setFormCode(branch.code);
-    setFormFolderId(branch.drive_folder_id || '');
-    setFormCredsJson(''); // demi keamanan tidak ditampilkan
+    setFormBridgeUrl(branch.drive_bridge_url || '');
+    setFormBridgeSecret(''); // Demi keamanan, secret tidak pernah ditampilkan kembali (write-only)
     setFormIsActive(branch.is_active);
     setIsModalOpen(true);
   }
 
   async function handleTestDrive() {
-    if (!formFolderId.trim()) {
-      toast.error('ID Folder Google Drive wajib diisi');
+    if (!formBridgeUrl.trim()) {
+      toast.error('URL Drive Bridge wajib diisi untuk menguji koneksi');
       return;
     }
 
-    if (!formCredsJson.trim() && !editingBranch?.has_drive_credentials) {
-      toast.error('JSON Service Account wajib diisi untuk menguji koneksi');
+    if (!formBridgeSecret.trim() && !editingBranch?.has_drive_bridge) {
+      toast.error('Secret Drive Bridge wajib diisi untuk menguji koneksi');
       return;
     }
 
@@ -96,8 +98,8 @@ export default function AdminCabangPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           branch_id: editingBranch?.id,
-          folder_id: formFolderId.trim(),
-          credentials_json: formCredsJson.trim() || undefined,
+          drive_bridge_url: formBridgeUrl.trim(),
+          drive_bridge_secret: formBridgeSecret.trim() || undefined,
         }),
       });
 
@@ -105,7 +107,7 @@ export default function AdminCabangPage() {
       if (res.ok && json.ok) {
         toast.success(json.message);
       } else {
-        toast.error(json.error || 'Uji koneksi Google Drive gagal');
+        toast.error(json.error || 'Uji koneksi Google Drive Bridge gagal');
       }
     } catch (e) {
       toast.error('Terjadi kesalahan jaringan saat menguji Drive');
@@ -129,12 +131,12 @@ export default function AdminCabangPage() {
       const payload = {
         name: formName.trim(),
         code: formCode.trim().toUpperCase(),
-        drive_folder_id: formFolderId.trim(),
+        drive_bridge_url: formBridgeUrl.trim(),
         is_active: formIsActive,
       };
 
-      if (formCredsJson.trim()) {
-        payload.drive_credentials_json = formCredsJson.trim();
+      if (formBridgeSecret.trim()) {
+        payload.drive_bridge_secret = formBridgeSecret.trim();
       }
 
       const res = await fetch(url, {
@@ -186,10 +188,10 @@ export default function AdminCabangPage() {
       <div className="bg-white p-5 sm:p-6 rounded-2xl border border-gray-100 shadow-soft flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-gray-900 font-title tracking-tight">
-            Master Cabang & Integrasi Drive
+            Master Cabang & Drive Bridge
           </h1>
           <p className="text-xs sm:text-sm text-gray-500 mt-1">
-            Kelola daftar cabang Indomaret se-Indonesia beserta konfigurasi Google Drive per cabang untuk pengarsipan bukti berita acara.
+            Kelola daftar cabang Indomaret se-Indonesia beserta integrasi Google Apps Script Drive Bridge untuk pengarsipan bukti berita acara.
           </p>
         </div>
 
@@ -216,7 +218,7 @@ export default function AdminCabangPage() {
                   <th className="py-3 px-4 w-12 text-center">No</th>
                   <th className="py-3 px-4">Kode</th>
                   <th className="py-3 px-4">Nama Cabang</th>
-                  <th className="py-3 px-4">Folder ID Google Drive</th>
+                  <th className="py-3 px-4">URL Drive Bridge (Apps Script)</th>
                   <th className="py-3 px-4 text-center">Status Drive</th>
                   <th className="py-3 px-4 text-center">Status Aktif</th>
                   <th className="py-3 px-4 text-center w-28">Aksi</th>
@@ -228,18 +230,25 @@ export default function AdminCabangPage() {
                     <td className="py-3.5 px-4 text-center font-bold text-gray-400">{idx + 1}</td>
                     <td className="py-3.5 px-4 font-mono font-bold text-gray-900">{b.code}</td>
                     <td className="py-3.5 px-4 font-semibold text-gray-900">{b.name}</td>
-                    <td className="py-3.5 px-4 font-mono text-gray-500 truncate max-w-[200px]">
-                      {b.drive_folder_id || '-'}
-                    </td>
-                    <td className="py-3.5 px-4 text-center">
-                      {b.has_drive_credentials ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Terhubung
+                    <td className="py-3.5 px-4 font-mono text-gray-500 truncate max-w-[260px]">
+                      {b.drive_bridge_url ? (
+                        <span title={b.drive_bridge_url} className="text-gray-600">
+                          {b.drive_bridge_url}
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-500">
-                          Belum Diatur
+                        <span className="text-gray-400 italic">Belum disetel</span>
+                      )}
+                    </td>
+                    <td className="py-3.5 px-4 text-center">
+                      {b.has_drive_bridge ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Drive Terhubung
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                          <AlertTriangle className="w-3 h-3" />
+                          Drive Belum Terhubung
                         </span>
                       )}
                     </td>
@@ -339,51 +348,68 @@ export default function AdminCabangPage() {
                 </div>
               </div>
 
+              {/* URL Drive Bridge */}
               <div>
                 <label className="block font-bold text-gray-700 uppercase mb-1">
-                  ID Folder Google Drive Cabang
+                  URL Drive Bridge (Google Apps Script Web App)
                 </label>
-                <input
-                  type="text"
-                  value={formFolderId}
-                  onChange={(e) => setFormFolderId(e.target.value)}
-                  placeholder="Contoh: 1a2B3c4D5e6F7g8H9..."
-                  className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl font-mono focus:bg-white"
-                />
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <Link2 className="w-4 h-4" />
+                  </div>
+                  <input
+                    type="url"
+                    value={formBridgeUrl}
+                    onChange={(e) => setFormBridgeUrl(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="w-full pl-9 pr-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl font-mono text-[11px] focus:bg-white"
+                  />
+                </div>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Dapatkan dari tautan folder Drive: drive.google.com/drive/folders/<b>[ID_FOLDER]</b>
+                  Dapatkan URL Web App dari menu Deploy &gt; New deployment di Google Apps Script akun cabang.
                 </p>
               </div>
 
+              {/* Secret Drive Bridge (Write-Only) */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="font-bold text-gray-700 uppercase">
-                    JSON Service Account Google Drive
+                    Secret Drive Bridge (Tulis-Saja / Write-Only)
                   </label>
-                  {editingBranch?.has_drive_credentials && (
-                    <span className="text-[11px] text-teal-700 font-semibold">
-                      (Kredensial tersimpan aman terenkripsi AES-256-GCM)
+                  {editingBranch?.has_drive_bridge && (
+                    <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      (Secret tersimpan aman terenkripsi AES-256-GCM)
                     </span>
                   )}
                 </div>
-                <textarea
-                  rows={4}
-                  value={formCredsJson}
-                  onChange={(e) => setFormCredsJson(e.target.value)}
-                  placeholder={
-                    editingBranch?.has_drive_credentials
-                      ? 'Kosongkan jika tidak ingin mengubah kunci JSON yang sudah tersimpan...'
-                      : 'Tempel seluruh isi file service_account.json di sini...'
-                  }
-                  className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl font-mono text-[11px] focus:bg-white"
-                />
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <KeyRound className="w-4 h-4" />
+                  </div>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={formBridgeSecret}
+                    onChange={(e) => setFormBridgeSecret(e.target.value)}
+                    placeholder={
+                      editingBranch?.has_drive_bridge
+                        ? 'Kosongkan jika tidak ingin mengubah kata sandi rahasia yang tersimpan...'
+                        : 'Masukkan kata sandi rahasia (SHARED_SECRET) cabang...'
+                    }
+                    className="w-full pl-9 pr-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl font-mono text-[11px] focus:bg-white"
+                  />
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Secret key harus sama persis dengan variabel <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-600 font-mono">SHARED_SECRET</code> di file Code.gs cabang.
+                </p>
               </div>
 
               {/* Tombol Uji Koneksi Google Drive */}
               <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-100 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <HardDrive className="w-4 h-4 text-[#0056b3]" />
-                  <span className="font-semibold text-gray-700 text-xs">Uji Akses Google Drive:</span>
+                  <span className="font-semibold text-gray-700 text-xs">Uji Akses Google Drive Bridge:</span>
                 </div>
                 <button
                   type="button"

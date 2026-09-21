@@ -2,8 +2,7 @@
 import { NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { getSupabaseAdmin } from '@/lib/supabase';
-import { validateEvidenceFile, uploadFileToDrive } from '@/lib/drive';
-import { decryptSecret } from '@/lib/crypto';
+import { validateEvidenceFile, driveUpload } from '@/lib/drive';
 import { auditLog } from '@/lib/audit';
 
 export const runtime = 'nodejs';
@@ -175,10 +174,10 @@ export async function POST(request) {
 
     const supabase = getSupabaseAdmin();
 
-    // Dapatkan data cabang untuk verifikasi & Google Drive
+    // Dapatkan data cabang untuk verifikasi & Google Drive Bridge
     const { data: branch, error: branchErr } = await supabase
       .from('branches')
-      .select('id, name, code, drive_folder_id, drive_credentials')
+      .select('id, name, code, drive_bridge_url, drive_bridge_secret_enc')
       .eq('id', branch_id)
       .single();
 
@@ -189,7 +188,19 @@ export async function POST(request) {
       );
     }
 
-    // Upload berkas bukti ke Google Drive jika ada berkas yang diunggah
+    // Periksa apakah Google Drive cabang sudah terhubung
+    const isDriveReady = Boolean(branch.drive_bridge_url && branch.drive_bridge_secret_enc);
+    if (!isDriveReady) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Input data untuk cabang "${branch.name}" diblokir karena Google Drive cabang belum terhubung. Hubungi Admin Cabang atau Admin Pusat untuk mengonfigurasi Drive Bridge.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    // Upload berkas bukti ke Google Drive via Drive Bridge jika ada berkas yang diunggah
     let driveFileData = {
       drive_file_id: null,
       drive_file_name: null,
@@ -204,38 +215,25 @@ export async function POST(request) {
         return NextResponse.json({ ok: false, error: validation.error }, { status: 400 });
       }
 
-      if (!branch.drive_credentials || !branch.drive_folder_id) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: `Cabang ${branch.name} belum memiliki integrasi Google Drive aktif. Hubungi Admin Pusat untuk mengonfigurasi Service Account Drive cabang ini.`,
-          },
-          { status: 400 }
-        );
-      }
-
       try {
-        const decryptedJson = decryptSecret(branch.drive_credentials);
-        const credentials = JSON.parse(decryptedJson);
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        const ext = file.name.split('.').pop() || 'bin';
+        const cleanNama = nama_peserta.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const safeFileName = `${nik}_BA_${cleanNama}_${tanggal_pelaksanaan}.${ext}`;
 
-        const uploadRes = await uploadFileToDrive({
-          credentials,
-          folderId: branch.drive_folder_id,
-          file,
-          customMetadata: {
-            nik,
-            nama_peserta,
-            tanggal_pelaksanaan,
-            branch_code: branch.code,
-          },
+        const uploadRes = await driveUpload(branch, {
+          fileName: safeFileName,
+          mimeType: file.type,
+          base64,
         });
 
         driveFileData = {
           drive_file_id: uploadRes.fileId,
           drive_file_name: uploadRes.fileName,
           drive_file_url: uploadRes.webViewLink,
-          file_mime_type: uploadRes.mimeType,
-          file_size_bytes: uploadRes.fileSize,
+          file_mime_type: file.type,
+          file_size_bytes: file.size,
         };
       } catch (driveErr) {
         console.error('[Drive Upload Error]:', driveErr);
